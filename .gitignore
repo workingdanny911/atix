@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Compiled binary (bun build --compile --outfile atix)
+/atix
+
+# SQLite databases
+*.db
+*.db-shm
+*.db-wal
+
+# Internal docs (not for public repo — README.md is the public entry point)
+docs/
+
+# Agent / editor config
+.claude/
+
+# OS
+.DS_Store

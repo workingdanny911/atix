@@ -1,0 +1,13 @@
+{
+  "name": "atix",
+  "version": "1.0.0",
+  "module": "src/cli.ts",
+  "type": "module",
+  "bin": { "atix": "src/cli.ts" },
+  "scripts": {
+    "start": "bun run src/cli.ts",
+    "build": "bun build src/cli.ts --compile --outfile atix",
+    "test": "bun test"
+  },
+  "devDependencies": { "@types/bun": "latest" }
+}
