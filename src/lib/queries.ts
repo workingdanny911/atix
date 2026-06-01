@@ -1,11 +1,26 @@
 import { nowIso } from "./time";
 import { ulid } from "./ulid";
-import { TICKET_SELECT_COLUMNS, REPLY_SELECT_COLUMNS, DOC_SELECT_COLUMNS } from "./serialize";
+import {
+  TICKET_SELECT_COLUMNS,
+  REPLY_SELECT_COLUMNS,
+  DOC_SELECT_COLUMNS,
+  THREAD_MESSAGE_SELECT_COLUMNS,
+} from "./serialize";
 
 import type { Database } from "bun:sqlite";
 import type { Meta } from "../types";
 import type { AuthorRole } from "./author";
-import type { DocOwnerKind, DocRow, ReplyRow, TicketRow } from "./serialize";
+import type {
+  DocOwnerKind,
+  DocRow,
+  ReplyRow,
+  ThreadActorKind,
+  ThreadActorRole,
+  ThreadMessageKind,
+  ThreadMessageRow,
+  ThreadRootKind,
+  TicketRow,
+} from "./serialize";
 
 /**
  * Shared read queries for the canonical (full-column) ticket object. Lives in
@@ -53,6 +68,28 @@ export interface InsertDocInput {
   contentType: string;
   content: string;
   sizeBytes: number;
+}
+
+export interface InsertThreadMessageInput {
+  rootKind: ThreadRootKind;
+  rootId: string;
+  kind: ThreadMessageKind;
+  body?: string;
+  actorKind: ThreadActorKind;
+  actorRole: ThreadActorRole;
+  actorAgent?: string | null;
+  actorProject?: string | null;
+  actorCwd?: string | null;
+  actorSession?: string | null;
+  actorPid?: number | null;
+  ticketId?: string | null;
+  causedByMessageId?: string | null;
+  correlationId?: string | null;
+  createdAt?: string;
+}
+
+export interface ThreadMessageWithDocs extends ThreadMessageRow {
+  docs?: DocRow[];
 }
 
 /**
@@ -138,6 +175,10 @@ export function fetchDocsForReply(db: Database, replyId: string): DocRow[] {
   return fetchDocsByOwner(db, "reply", replyId);
 }
 
+export function fetchDocsForMessage(db: Database, messageId: string): DocRow[] {
+  return fetchDocsByOwner(db, "message", messageId);
+}
+
 export function fetchDocsByOwner(
   db: Database,
   ownerKind: DocOwnerKind,
@@ -152,6 +193,36 @@ export function fetchDocsByOwner(
         ORDER BY position ASC, id ASC`,
     )
     .all(ownerKind, ownerId) as DocRow[];
+}
+
+export function fetchThreadMessages(
+  db: Database,
+  rootKind: ThreadRootKind,
+  rootId: string,
+  afterSeq = 0,
+  withDocs = false,
+): ThreadMessageWithDocs[] {
+  const messages = db
+    .query(
+      `SELECT ${THREAD_MESSAGE_SELECT_COLUMNS}
+         FROM thread_messages
+        WHERE root_kind = ? AND root_id = ? AND seq > ?
+        ORDER BY seq ASC`,
+    )
+    .all(rootKind, rootId, afterSeq) as ThreadMessageRow[];
+
+  if (!withDocs) return messages;
+
+  return messages.map((message) => ({
+    ...message,
+    docs: fetchDocsForMessage(db, message.id),
+  }));
+}
+
+export function fetchThreadMessage(db: Database, messageId: string): ThreadMessageRow | null {
+  return db
+    .query(`SELECT ${THREAD_MESSAGE_SELECT_COLUMNS} FROM thread_messages WHERE id = ?`)
+    .get(messageId) as ThreadMessageRow | null;
 }
 
 export interface InsertReplyInput {
@@ -198,18 +269,20 @@ export function insertDoc(db: Database, input: InsertDocInput): string {
   const askGroupId = input.ownerKind === "ask_group" ? input.ownerId : null;
   const ticketId = input.ownerKind === "ticket" ? input.ownerId : null;
   const replyId = input.ownerKind === "reply" ? input.ownerId : null;
+  const threadMessageId = input.ownerKind === "message" ? input.ownerId : null;
 
   db.query(
     `INSERT INTO docs
-       (id, owner_kind, ask_group_id, ticket_id, reply_id, position,
+       (id, owner_kind, ask_group_id, ticket_id, reply_id, thread_message_id, position,
         title, content_type, content, size_bytes, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     docId,
     input.ownerKind,
     askGroupId,
     ticketId,
     replyId,
+    threadMessageId,
     input.position,
     input.title,
     input.contentType,
@@ -221,8 +294,64 @@ export function insertDoc(db: Database, input: InsertDocInput): string {
   return docId;
 }
 
-function docOwnerColumn(ownerKind: DocOwnerKind): "ask_group_id" | "ticket_id" | "reply_id" {
+export function insertThreadMessage(
+  db: Database,
+  input: InsertThreadMessageInput,
+): ThreadMessageRow {
+  const messageId = ulid();
+  const createdAt = input.createdAt ?? nowIso();
+  const seq = nextThreadSeq(db, input.rootKind, input.rootId);
+
+  db.query(
+    `INSERT INTO thread_messages
+       (id, root_kind, root_id, seq, kind, body,
+        actor_kind, actor_role, actor_agent, actor_project, actor_cwd,
+        actor_session, actor_pid, ticket_id, caused_by_message_id,
+        correlation_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    messageId,
+    input.rootKind,
+    input.rootId,
+    seq,
+    input.kind,
+    input.body ?? "",
+    input.actorKind,
+    input.actorRole,
+    input.actorAgent ?? null,
+    input.actorProject ?? null,
+    input.actorCwd ?? null,
+    input.actorSession ?? null,
+    input.actorPid ?? null,
+    input.ticketId ?? null,
+    input.causedByMessageId ?? null,
+    input.correlationId ?? null,
+    createdAt,
+  );
+
+  const row = fetchThreadMessage(db, messageId);
+  if (row === null) {
+    throw new Error(`insertThreadMessage: inserted message '${messageId}' disappeared`);
+  }
+  return row;
+}
+
+function nextThreadSeq(db: Database, rootKind: ThreadRootKind, rootId: string): number {
+  const row = db
+    .query(
+      `SELECT COALESCE(MAX(seq), 0) + 1 AS seq
+         FROM thread_messages
+        WHERE root_kind = ? AND root_id = ?`,
+    )
+    .get(rootKind, rootId) as { seq: number };
+  return row.seq;
+}
+
+function docOwnerColumn(
+  ownerKind: DocOwnerKind,
+): "ask_group_id" | "ticket_id" | "reply_id" | "thread_message_id" {
   if (ownerKind === "ask_group") return "ask_group_id";
   if (ownerKind === "ticket") return "ticket_id";
-  return "reply_id";
+  if (ownerKind === "reply") return "reply_id";
+  return "thread_message_id";
 }

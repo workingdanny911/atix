@@ -5,7 +5,13 @@ import { parseWaitDuration } from "../lib/duration";
 import { resolveDocs } from "../lib/docs";
 import { BadFlagError, UnknownChannelError } from "../lib/errors";
 import { resolveOutputMode, printJson, printLine, colorize, statusIcon } from "../lib/output";
-import { findChannel, fetchDocsForTicket, fetchTicket, insertDoc } from "../lib/queries";
+import {
+  findChannel,
+  fetchDocsForTicket,
+  fetchTicket,
+  insertDoc,
+  insertThreadMessage,
+} from "../lib/queries";
 import { serializeTicket } from "../lib/serialize";
 import { nowIso } from "../lib/time";
 import { validateTitle } from "../lib/title";
@@ -23,7 +29,8 @@ class ChannelArchivedError extends AtixError {
 
 function commands(id: string, channel: string): Record<string, string> {
   return {
-    read: `atix show ${id} --with-docs --with-replies`,
+    read: `atix thread ${id} --with-docs`,
+    snapshot: `atix show ${id} --with-docs`,
     receive: `atix inbox --from ${channel}`,
     wait: `atix show ${id} --wait 30m`,
     done: `atix done ${id} --receipt <receipt>`,
@@ -117,8 +124,25 @@ export async function run(ctx: Ctx): Promise<number> {
       createdAt,
     );
 
+    const opened = insertThreadMessage(db, {
+      rootKind: "ticket",
+      rootId: id,
+      kind: "opened",
+      body: text,
+      actorKind: meta.kind,
+      actorRole: "producer",
+      actorAgent: meta.agent,
+      actorProject: meta.project,
+      actorCwd: meta.cwd,
+      actorSession: meta.session,
+      actorPid: meta.pid,
+      ticketId: id,
+      createdAt,
+    });
+
     for (const doc of docs) {
       insertDoc(db, { ownerKind: "ticket", ownerId: id, ...doc });
+      insertDoc(db, { ownerKind: "message", ownerId: opened.id, ...doc });
     }
   });
 

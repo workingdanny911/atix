@@ -1,6 +1,20 @@
 import type { Kind, TicketStatus } from "../types";
 
-export type DocOwnerKind = "ask_group" | "ticket" | "reply";
+export type DocOwnerKind = "ask_group" | "ticket" | "reply" | "message";
+export type ThreadRootKind = "ticket" | "ask_group";
+export type ThreadMessageKind =
+  | "opened"
+  | "claimed"
+  | "progress"
+  | "question"
+  | "answer"
+  | "note"
+  | "result"
+  | "canceled"
+  | "released"
+  | "system";
+export type ThreadActorKind = Kind | "system";
+export type ThreadActorRole = "producer" | "claimer" | "other" | "system";
 
 /**
  * Row shape carrying every column the canonical ticket object needs. Commands
@@ -45,11 +59,32 @@ export interface DocRow {
   ask_group_id: string | null;
   ticket_id: string | null;
   reply_id: string | null;
+  thread_message_id: string | null;
   position: number;
   title: string;
   content_type: string;
   content: string;
   size_bytes: number;
+  created_at: string;
+}
+
+export interface ThreadMessageRow {
+  id: string;
+  root_kind: ThreadRootKind;
+  root_id: string;
+  seq: number;
+  kind: ThreadMessageKind;
+  body: string;
+  actor_kind: ThreadActorKind;
+  actor_role: ThreadActorRole;
+  actor_agent: string | null;
+  actor_project: string | null;
+  actor_cwd: string | null;
+  actor_session: string | null;
+  actor_pid: number | null;
+  ticket_id: string | null;
+  caused_by_message_id: string | null;
+  correlation_id: string | null;
   created_at: string;
 }
 
@@ -64,8 +99,12 @@ export const TICKET_SELECT_COLUMNS = `id, channel, status, title, body,
 
 export const REPLY_SELECT_COLUMNS = `id, author_kind, author_role, author_agent, is_final, body, created_at`;
 
-export const DOC_SELECT_COLUMNS = `id, owner_kind, ask_group_id, ticket_id, reply_id,
+export const DOC_SELECT_COLUMNS = `id, owner_kind, ask_group_id, ticket_id, reply_id, thread_message_id,
   position, title, content_type, content, size_bytes, created_at`;
+
+export const THREAD_MESSAGE_SELECT_COLUMNS = `id, root_kind, root_id, seq, kind, body,
+  actor_kind, actor_role, actor_agent, actor_project, actor_cwd, actor_session, actor_pid,
+  ticket_id, caused_by_message_id, correlation_id, created_at`;
 
 interface SerializeTicketOptions {
   /** Append a `replies` key with the serialized array (omit the key otherwise). */
@@ -77,6 +116,11 @@ interface SerializeTicketOptions {
 }
 
 interface SerializeReplyOptions {
+  /** Append a `docs` key with the serialized array (omit the key otherwise). */
+  docs?: DocRow[];
+}
+
+interface SerializeThreadMessageOptions {
   /** Append a `docs` key with the serialized array (omit the key otherwise). */
   docs?: DocRow[];
 }
@@ -168,6 +212,7 @@ export function serializeDoc(doc: DocRow): Record<string, unknown> {
     ask_group_id: doc.ask_group_id,
     ticket_id: doc.ticket_id,
     reply_id: doc.reply_id,
+    thread_message_id: doc.thread_message_id,
     position: doc.position,
     title: doc.title,
     content_type: doc.content_type,
@@ -175,4 +220,38 @@ export function serializeDoc(doc: DocRow): Record<string, unknown> {
     size_bytes: doc.size_bytes,
     created_at: doc.created_at,
   };
+}
+
+export function serializeThreadMessage(
+  message: ThreadMessageRow,
+  opts: SerializeThreadMessageOptions = {},
+): Record<string, unknown> {
+  const obj: Record<string, unknown> = {
+    id: message.id,
+    root_kind: message.root_kind,
+    root_id: message.root_id,
+    seq: message.seq,
+    cursor: String(message.seq),
+    kind: message.kind,
+    body: message.body,
+    actor: {
+      kind: message.actor_kind,
+      role: message.actor_role,
+      agent: message.actor_agent,
+      project: message.actor_project,
+      cwd: message.actor_cwd,
+      session: message.actor_session,
+      pid: message.actor_pid,
+    },
+    ticket_id: message.ticket_id,
+    caused_by_message_id: message.caused_by_message_id,
+    correlation_id: message.correlation_id,
+    created_at: message.created_at,
+  };
+
+  if (opts.docs !== undefined) {
+    obj.docs = opts.docs.map(serializeDoc);
+  }
+
+  return obj;
 }

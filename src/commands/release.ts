@@ -1,8 +1,10 @@
 import { withImmediateTx } from "../db/connection";
 import { flagString, flagBool } from "../lib/args";
+import { nowIso } from "../lib/time";
 import { resolveOutputMode, printJson, printLine, colorize } from "../lib/output";
 import { EXIT } from "../lib/exit";
 import { BadFlagError, NotFoundError, ConflictError } from "../lib/errors";
+import { fetchAskGroupForTicket, insertThreadMessage } from "../lib/queries";
 
 import type { Database } from "bun:sqlite";
 import type { Ctx } from "../types";
@@ -34,6 +36,47 @@ function reopen(db: Database, id: string): void {
   ).run(id);
 }
 
+function appendReleasedMessages(ctx: Ctx, id: string, forced: boolean): void {
+  const db = ctx.db;
+  if (db === null) throw new Error("release: database connection was not provided");
+
+  const createdAt = nowIso();
+  const actorRole = forced ? "other" : "claimer";
+  const ticketMessage = insertThreadMessage(db, {
+    rootKind: "ticket",
+    rootId: id,
+    kind: "released",
+    actorKind: ctx.meta.kind,
+    actorRole,
+    actorAgent: ctx.meta.agent,
+    actorProject: ctx.meta.project,
+    actorCwd: ctx.meta.cwd,
+    actorSession: ctx.meta.session,
+    actorPid: ctx.meta.pid,
+    ticketId: id,
+    createdAt,
+  });
+
+  const group = fetchAskGroupForTicket(db, id);
+  if (group === null) return;
+
+  insertThreadMessage(db, {
+    rootKind: "ask_group",
+    rootId: group.id,
+    kind: "released",
+    actorKind: ctx.meta.kind,
+    actorRole,
+    actorAgent: ctx.meta.agent,
+    actorProject: ctx.meta.project,
+    actorCwd: ctx.meta.cwd,
+    actorSession: ctx.meta.session,
+    actorPid: ctx.meta.pid,
+    ticketId: id,
+    causedByMessageId: ticketMessage.id,
+    createdAt,
+  });
+}
+
 export function run(ctx: Ctx): number {
   const db = ctx.db;
   if (db === null) throw new Error("release: database connection was not provided");
@@ -59,6 +102,7 @@ export function run(ctx: Ctx): number {
         throw new ConflictError(`ticket '${id}' is not claimed (status: ${row.status})`);
       }
       reopen(db, id);
+      appendReleasedMessages(ctx, id, true);
       return emit(ctx, id, true);
     }
 
@@ -67,6 +111,7 @@ export function run(ctx: Ctx): number {
       throw new ConflictError(`ticket '${id}': wrong token or not claimed`);
     }
     reopen(db, id);
+    appendReleasedMessages(ctx, id, false);
     return emit(ctx, id, false);
   });
 }

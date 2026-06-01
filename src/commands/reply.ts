@@ -1,14 +1,23 @@
 import { withImmediateTx } from "../db/connection";
+import { flagString } from "../lib/args";
 import { resolveBody } from "../lib/body";
 import { resolveDocs } from "../lib/docs";
 import { resolveOutputMode, printJson, printLine, colorize } from "../lib/output";
 import { EXIT } from "../lib/exit";
 import { BadFlagError, NotFoundError } from "../lib/errors";
 import { authorRole } from "../lib/author";
-import { fetchDocsForReply, fetchReply, insertDoc, insertReply } from "../lib/queries";
+import {
+  fetchAskGroupForTicket,
+  fetchDocsForReply,
+  fetchReply,
+  insertDoc,
+  insertReply,
+  insertThreadMessage,
+} from "../lib/queries";
 import { serializeReply } from "../lib/serialize";
 
 import type { Ctx } from "../types";
+import type { ThreadMessageKind } from "../lib/serialize";
 
 interface TicketRow {
   id: string;
@@ -16,6 +25,20 @@ interface TicketRow {
   producer_session: string | null;
   claimer_agent: string | null;
   claimer_session: string | null;
+}
+
+const PUBLIC_KINDS = new Set(["progress", "question", "answer", "note"]);
+
+function parseKind(ctx: Ctx): ThreadMessageKind {
+  const kindFlag = ctx.args.flags["kind"];
+  if (kindFlag !== undefined && typeof kindFlag !== "string") {
+    throw new BadFlagError("reply --kind requires a value");
+  }
+  const kind = flagString(ctx.args, "kind") ?? "note";
+  if (!PUBLIC_KINDS.has(kind)) {
+    throw new BadFlagError("reply --kind must be one of progress, question, answer, note");
+  }
+  return kind as ThreadMessageKind;
 }
 
 /**
@@ -52,6 +75,7 @@ export async function run(ctx: Ctx): Promise<number> {
     throw new BadFlagError("reply requires a non-empty body or at least one doc");
   }
 
+  const kind = parseKind(ctx);
   const role = authorRole(ctx.meta, row);
   const replyId = withImmediateTx(db, () => {
     const inserted = insertReply(db, {
@@ -61,8 +85,46 @@ export async function run(ctx: Ctx): Promise<number> {
       isFinal: false,
       body: text,
     });
+    const ticketMessage = insertThreadMessage(db, {
+      rootKind: "ticket",
+      rootId: id,
+      kind,
+      body: text,
+      actorKind: ctx.meta.kind,
+      actorRole: role,
+      actorAgent: ctx.meta.agent,
+      actorProject: ctx.meta.project,
+      actorCwd: ctx.meta.cwd,
+      actorSession: ctx.meta.session,
+      actorPid: ctx.meta.pid,
+      ticketId: id,
+    });
     for (const doc of docs) {
       insertDoc(db, { ownerKind: "reply", ownerId: inserted, ...doc });
+      insertDoc(db, { ownerKind: "message", ownerId: ticketMessage.id, ...doc });
+    }
+
+    const group = fetchAskGroupForTicket(db, id);
+    if (group !== null) {
+      const groupMessage = insertThreadMessage(db, {
+        rootKind: "ask_group",
+        rootId: group.id,
+        kind,
+        body: text,
+        actorKind: ctx.meta.kind,
+        actorRole: role,
+        actorAgent: ctx.meta.agent,
+        actorProject: ctx.meta.project,
+        actorCwd: ctx.meta.cwd,
+        actorSession: ctx.meta.session,
+        actorPid: ctx.meta.pid,
+        ticketId: id,
+        causedByMessageId: ticketMessage.id,
+        createdAt: ticketMessage.created_at,
+      });
+      for (const doc of docs) {
+        insertDoc(db, { ownerKind: "message", ownerId: groupMessage.id, ...doc });
+      }
     }
     return inserted;
   });

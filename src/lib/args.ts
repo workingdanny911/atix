@@ -27,8 +27,10 @@ const KNOWN_VALUE_FLAGS = new Set<string>([
   "token",
   "receipt",
   "reason",
+  "kind",
   // wait / claim / list — time & filter values.
   "until",
+  "after",
   "since",
   "timeout",
   "poll",

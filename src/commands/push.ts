@@ -7,7 +7,7 @@ import { ulid } from "../lib/ulid";
 import { resolveOutputMode, printJson, printLine, colorize, statusIcon } from "../lib/output";
 import { AtixError, EXIT } from "../lib/exit";
 import { BadFlagError, UnknownChannelError } from "../lib/errors";
-import { findChannel } from "../lib/queries";
+import { findChannel, insertThreadMessage } from "../lib/queries";
 
 import type { Ctx } from "../types";
 
@@ -79,6 +79,22 @@ export async function run(ctx: Ctx): Promise<number> {
       meta.pid,
       createdAt,
     );
+
+    insertThreadMessage(db, {
+      rootKind: "ticket",
+      rootId: id,
+      kind: "opened",
+      body: text,
+      actorKind: meta.kind,
+      actorRole: "producer",
+      actorAgent: meta.agent,
+      actorProject: meta.project,
+      actorCwd: meta.cwd,
+      actorSession: meta.session,
+      actorPid: meta.pid,
+      ticketId: id,
+      createdAt,
+    });
   });
 
   if (ctx.json) {

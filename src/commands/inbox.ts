@@ -9,6 +9,7 @@ import {
   fetchDocsForTicket,
   fetchTicket,
   findChannel,
+  insertThreadMessage,
 } from "../lib/queries";
 import { serializeDoc, serializeTicket } from "../lib/serialize";
 import { nowIso } from "../lib/time";
@@ -42,6 +43,42 @@ class ClaimInvariantError extends AtixError {
 
 function parseWaitable(raw: string): number {
   return raw === "0" ? 0 : parseDuration(raw);
+}
+
+function appendClaimedMessages(db: Database, ticketId: string, meta: Meta, claimedAt: string): void {
+  const ticketMessage = insertThreadMessage(db, {
+    rootKind: "ticket",
+    rootId: ticketId,
+    kind: "claimed",
+    actorKind: meta.kind,
+    actorRole: "claimer",
+    actorAgent: meta.agent,
+    actorProject: meta.project,
+    actorCwd: meta.cwd,
+    actorSession: meta.session,
+    actorPid: meta.pid,
+    ticketId,
+    createdAt: claimedAt,
+  });
+
+  const group = fetchAskGroupForTicket(db, ticketId);
+  if (group === null) return;
+
+  insertThreadMessage(db, {
+    rootKind: "ask_group",
+    rootId: group.id,
+    kind: "claimed",
+    actorKind: meta.kind,
+    actorRole: "claimer",
+    actorAgent: meta.agent,
+    actorProject: meta.project,
+    actorCwd: meta.cwd,
+    actorSession: meta.session,
+    actorPid: meta.pid,
+    ticketId,
+    causedByMessageId: ticketMessage.id,
+    createdAt: claimedAt,
+  });
 }
 
 function tryClaimOnce(db: Database, channel: string, meta: Meta): ClaimedTicketRow | null {
@@ -80,6 +117,7 @@ function tryClaimOnce(db: Database, channel: string, meta: Meta): ClaimedTicketR
       );
 
     if (res.changes !== 1) throw new ClaimInvariantError(candidate.id, res.changes);
+    appendClaimedMessages(db, candidate.id, meta, claimedAt);
     return { id: candidate.id, claimed_at: claimedAt, claim_token: token };
   });
 }

@@ -1,7 +1,9 @@
 import { withImmediateTx } from "../db/connection";
+import { nowIso } from "../lib/time";
 import { resolveOutputMode, printJson, printLine, colorize } from "../lib/output";
 import { AtixError, EXIT } from "../lib/exit";
 import { NotFoundError } from "../lib/errors";
+import { fetchAskGroupForTicket, insertThreadMessage } from "../lib/queries";
 
 import type { Ctx } from "../types";
 
@@ -46,7 +48,7 @@ interface TicketRow {
 }
 
 /**
- * Reissue a claim token for a ticket when its claimer lost the original. Only
+ * Reissue a claim receipt for a ticket when its claimer lost the original. Only
  * the same session (agent + session match) may recover; otherwise the holder
  * must explicitly release with --force.
  */
@@ -92,14 +94,41 @@ export function run(ctx: Ctx): number {
     // the impossible case onto SessionMismatchError, which was semantically
     // wrong; we now make the broken invariant explicit instead.
     if (res.changes !== 1) throw new RecoverInvariantError(id, res.changes);
+
+    const createdAt = nowIso();
+    const ticketMessage = insertThreadMessage(db, {
+      rootKind: "ticket",
+      rootId: id,
+      kind: "system",
+      body: "claim receipt recovered",
+      actorKind: "system",
+      actorRole: "system",
+      ticketId: id,
+      createdAt,
+    });
+
+    const group = fetchAskGroupForTicket(db, id);
+    if (group !== null) {
+      insertThreadMessage(db, {
+        rootKind: "ask_group",
+        rootId: group.id,
+        kind: "system",
+        body: "claim receipt recovered",
+        actorKind: "system",
+        actorRole: "system",
+        ticketId: id,
+        causedByMessageId: ticketMessage.id,
+        createdAt,
+      });
+    }
   });
 
   if (ctx.json) {
-    printJson({ ok: true, id, claim_token: newToken, status: "claimed" });
+    printJson({ ok: true, id, receipt: newToken, claim_token: newToken, status: "claimed" });
     return EXIT.OK;
   }
 
   const mode = resolveOutputMode(false);
-  printLine(`recovered ${colorize(mode, "cyan", id)} — new claim token issued`);
+  printLine(`recovered ${colorize(mode, "cyan", id)} — new receipt issued`);
   return EXIT.OK;
 }

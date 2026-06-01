@@ -6,10 +6,19 @@ import { nowIso } from "../lib/time";
 import { resolveOutputMode, printJson, printLine, colorize, statusIcon } from "../lib/output";
 import { EXIT } from "../lib/exit";
 import { BadFlagError, NotFoundError, ConflictError } from "../lib/errors";
-import { fetchDocsForReply, fetchReply, fetchTicket, insertDoc, insertReply } from "../lib/queries";
+import {
+  fetchAskGroupForTicket,
+  fetchDocsForReply,
+  fetchReply,
+  fetchTicket,
+  insertDoc,
+  insertReply,
+  insertThreadMessage,
+} from "../lib/queries";
 import { serializeReply, serializeTicket } from "../lib/serialize";
 
 import type { Ctx } from "../types";
+import type { ThreadMessageKind } from "../lib/serialize";
 
 interface TicketRow {
   id: string;
@@ -21,6 +30,60 @@ interface FinalReplyInput {
   body: string;
   docs: Awaited<ReturnType<typeof resolveDocs>>;
   shouldInsert: boolean;
+}
+
+function appendTicketAndGroupMessage(
+  ctx: Ctx,
+  ticketId: string,
+  kind: ThreadMessageKind,
+  body: string,
+  docs: FinalReplyInput["docs"],
+  createdAt?: string,
+): void {
+  const db = ctx.db;
+  if (db === null) throw new Error("done: database connection was not provided");
+
+  const ticketMessage = insertThreadMessage(db, {
+    rootKind: "ticket",
+    rootId: ticketId,
+    kind,
+    body,
+    actorKind: ctx.meta.kind,
+    actorRole: "claimer",
+    actorAgent: ctx.meta.agent,
+    actorProject: ctx.meta.project,
+    actorCwd: ctx.meta.cwd,
+    actorSession: ctx.meta.session,
+    actorPid: ctx.meta.pid,
+    ticketId,
+    createdAt,
+  });
+  for (const doc of docs) {
+    insertDoc(db, { ownerKind: "message", ownerId: ticketMessage.id, ...doc });
+  }
+
+  const group = fetchAskGroupForTicket(db, ticketId);
+  if (group === null) return;
+
+  const groupMessage = insertThreadMessage(db, {
+    rootKind: "ask_group",
+    rootId: group.id,
+    kind,
+    body,
+    actorKind: ctx.meta.kind,
+    actorRole: "claimer",
+    actorAgent: ctx.meta.agent,
+    actorProject: ctx.meta.project,
+    actorCwd: ctx.meta.cwd,
+    actorSession: ctx.meta.session,
+    actorPid: ctx.meta.pid,
+    ticketId,
+    causedByMessageId: ticketMessage.id,
+    createdAt: ticketMessage.created_at,
+  });
+  for (const doc of docs) {
+    insertDoc(db, { ownerKind: "message", ownerId: groupMessage.id, ...doc });
+  }
 }
 
 /**
@@ -83,8 +146,9 @@ export async function run(ctx: Ctx): Promise<number> {
       .run(closedAt, id, token);
 
     if (res.changes === 1) {
+      let replyId: string | null = null;
       if (finalReply.shouldInsert) {
-        const replyId = insertReply(db, {
+        replyId = insertReply(db, {
           ticketId: id,
           meta: ctx.meta,
           role: "claimer",
@@ -94,9 +158,9 @@ export async function run(ctx: Ctx): Promise<number> {
         for (const doc of finalReply.docs) {
           insertDoc(db, { ownerKind: "reply", ownerId: replyId, ...doc });
         }
-        return { kind: "done", replyId };
       }
-      return { kind: "done", replyId: null };
+      appendTicketAndGroupMessage(ctx, id, "result", finalReply.body, finalReply.docs, closedAt);
+      return { kind: "done", replyId };
     }
 
     // changes === 0 → diagnose.
@@ -143,6 +207,7 @@ export async function run(ctx: Ctx): Promise<number> {
     for (const doc of outcome.docs) {
       insertDoc(db, { ownerKind: "reply", ownerId: replyId, ...doc });
     }
+    appendTicketAndGroupMessage(ctx, id, "note", outcome.body, outcome.docs);
   });
   throw new ConflictError("ticket was canceled — your --body preserved as reply");
 }

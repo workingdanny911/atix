@@ -5,7 +5,7 @@ import { nowIso } from "../lib/time";
 import { resolveOutputMode, printJson, printLine, colorize, statusIcon } from "../lib/output";
 import { AtixError, EXIT } from "../lib/exit";
 import { BadFlagError, UnknownChannelError } from "../lib/errors";
-import { findChannel } from "../lib/queries";
+import { fetchAskGroupForTicket, findChannel, insertThreadMessage } from "../lib/queries";
 import { normalizePollSeconds, shouldKeepPolling } from "../lib/claim-policy";
 import { isSqliteBusy } from "../lib/sqlite";
 
@@ -46,6 +46,42 @@ class ClaimInvariantError extends AtixError {
     );
     this.name = "ClaimInvariantError";
   }
+}
+
+function appendClaimedMessages(db: Database, ticketId: string, meta: Meta, claimedAt: string): void {
+  const ticketMessage = insertThreadMessage(db, {
+    rootKind: "ticket",
+    rootId: ticketId,
+    kind: "claimed",
+    actorKind: meta.kind,
+    actorRole: "claimer",
+    actorAgent: meta.agent,
+    actorProject: meta.project,
+    actorCwd: meta.cwd,
+    actorSession: meta.session,
+    actorPid: meta.pid,
+    ticketId,
+    createdAt: claimedAt,
+  });
+
+  const group = fetchAskGroupForTicket(db, ticketId);
+  if (group === null) return;
+
+  insertThreadMessage(db, {
+    rootKind: "ask_group",
+    rootId: group.id,
+    kind: "claimed",
+    actorKind: meta.kind,
+    actorRole: "claimer",
+    actorAgent: meta.agent,
+    actorProject: meta.project,
+    actorCwd: meta.cwd,
+    actorSession: meta.session,
+    actorPid: meta.pid,
+    ticketId,
+    causedByMessageId: ticketMessage.id,
+    createdAt: claimedAt,
+  });
 }
 
 /**
@@ -98,6 +134,7 @@ function tryClaimOnce(db: Database, channel: string, meta: Meta): ClaimedTicketR
       );
 
     if (res.changes !== 1) throw new ClaimInvariantError(candidate.id, res.changes);
+    appendClaimedMessages(db, candidate.id, meta, claimedAt);
 
     return db
       .query(

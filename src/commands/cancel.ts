@@ -5,7 +5,7 @@ import { resolveOutputMode, printJson, printLine, colorize, statusIcon } from ".
 import { EXIT } from "../lib/exit";
 import { BadFlagError, NotFoundError, ConflictError } from "../lib/errors";
 import { authorRole } from "../lib/author";
-import { insertReply } from "../lib/queries";
+import { fetchAskGroupForTicket, insertReply, insertThreadMessage } from "../lib/queries";
 
 import type { Ctx } from "../types";
 
@@ -41,16 +41,52 @@ export function run(ctx: Ctx): number {
       .run(closedAt, id);
 
     if (res.changes === 1) {
+      const row = db
+        .query(
+          "SELECT id, status, producer_agent, producer_session, claimer_agent, claimer_session FROM tickets WHERE id = ?",
+        )
+        .get(id) as TicketRow;
+      const role = authorRole(ctx.meta, row);
+      const ticketMessage = insertThreadMessage(db, {
+        rootKind: "ticket",
+        rootId: id,
+        kind: "canceled",
+        body: reason ?? "",
+        actorKind: ctx.meta.kind,
+        actorRole: role,
+        actorAgent: ctx.meta.agent,
+        actorProject: ctx.meta.project,
+        actorCwd: ctx.meta.cwd,
+        actorSession: ctx.meta.session,
+        actorPid: ctx.meta.pid,
+        ticketId: id,
+        createdAt: closedAt,
+      });
+      const group = fetchAskGroupForTicket(db, id);
+      if (group !== null) {
+        insertThreadMessage(db, {
+          rootKind: "ask_group",
+          rootId: group.id,
+          kind: "canceled",
+          body: reason ?? "",
+          actorKind: ctx.meta.kind,
+          actorRole: role,
+          actorAgent: ctx.meta.agent,
+          actorProject: ctx.meta.project,
+          actorCwd: ctx.meta.cwd,
+          actorSession: ctx.meta.session,
+          actorPid: ctx.meta.pid,
+          ticketId: id,
+          causedByMessageId: ticketMessage.id,
+          createdAt: closedAt,
+        });
+      }
+
       if (reason !== undefined && reason.length > 0) {
-        const row = db
-          .query(
-            "SELECT id, status, producer_agent, producer_session, claimer_agent, claimer_session FROM tickets WHERE id = ?",
-          )
-          .get(id) as TicketRow;
         insertReply(db, {
           ticketId: id,
           meta: ctx.meta,
-          role: authorRole(ctx.meta, row),
+          role,
           isFinal: true,
           body: reason,
         });

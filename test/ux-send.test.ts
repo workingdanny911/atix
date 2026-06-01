@@ -84,7 +84,9 @@ describe("send and show UX", () => {
     expect(sent.ticket.title).toBe("Review the patch");
     expect(sent.ticket.body).toBe("Please review the latest changes.");
     expect(typeof sent.ticket.id).toBe("string");
-    expect(sent.commands.read).toContain(sent.ticket.id);
+    expect(sent.commands.read).toBe(`atix thread ${sent.ticket.id} --with-docs`);
+    expect(sent.commands.read).not.toContain("show --with-replies");
+    expect(sent.commands.snapshot).toBe(`atix show ${sent.ticket.id} --with-docs`);
 
     const show = await atix(dbPath, ["show", sent.ticket.id, "--json"]);
     expect(show.exitCode).toBe(0);

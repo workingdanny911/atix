@@ -12,6 +12,7 @@ import {
   fetchTicket,
   findChannel,
   insertDoc,
+  insertThreadMessage,
 } from "../lib/queries";
 import { serializeDoc, serializeTicket } from "../lib/serialize";
 import { nowIso } from "../lib/time";
@@ -45,7 +46,8 @@ function parseChannels(args: Ctx["args"]): string[] {
 
 function commands(groupId: string, channels: string[]): Record<string, unknown> {
   return {
-    read: `atix show ${groupId} --with-docs --with-replies`,
+    read: `atix thread ${groupId} --with-docs`,
+    snapshot: `atix show ${groupId} --with-docs`,
     receive: channels.map((channel) => `atix inbox --from ${channel}`),
     wait: `atix show ${groupId} --wait 30m`,
   };
@@ -193,8 +195,24 @@ export async function run(ctx: Ctx): Promise<number> {
       createdAt,
     );
 
+    const groupOpened = insertThreadMessage(db, {
+      rootKind: "ask_group",
+      rootId: groupId,
+      kind: "opened",
+      body: text,
+      actorKind: meta.kind,
+      actorRole: "producer",
+      actorAgent: meta.agent,
+      actorProject: meta.project,
+      actorCwd: meta.cwd,
+      actorSession: meta.session,
+      actorPid: meta.pid,
+      createdAt,
+    });
+
     for (const doc of docs) {
       insertDoc(db, { ownerKind: "ask_group", ownerId: groupId, ...doc });
+      insertDoc(db, { ownerKind: "message", ownerId: groupOpened.id, ...doc });
     }
 
     for (let position = 0; position < channels.length; position++) {
@@ -224,6 +242,39 @@ export async function run(ctx: Ctx): Promise<number> {
            (group_id, ticket_id, member_role, position, created_at)
          VALUES (?, ?, 'opinion', ?, ?)`,
       ).run(groupId, ticketId, position, createdAt);
+
+      const childOpened = insertThreadMessage(db, {
+        rootKind: "ticket",
+        rootId: ticketId,
+        kind: "opened",
+        body: text,
+        actorKind: meta.kind,
+        actorRole: "producer",
+        actorAgent: meta.agent,
+        actorProject: meta.project,
+        actorCwd: meta.cwd,
+        actorSession: meta.session,
+        actorPid: meta.pid,
+        ticketId,
+        createdAt,
+      });
+
+      insertThreadMessage(db, {
+        rootKind: "ask_group",
+        rootId: groupId,
+        kind: "opened",
+        body: text,
+        actorKind: meta.kind,
+        actorRole: "producer",
+        actorAgent: meta.agent,
+        actorProject: meta.project,
+        actorCwd: meta.cwd,
+        actorSession: meta.session,
+        actorPid: meta.pid,
+        ticketId,
+        causedByMessageId: childOpened.id,
+        createdAt,
+      });
     }
   });
 

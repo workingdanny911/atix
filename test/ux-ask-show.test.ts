@@ -100,6 +100,9 @@ describe("ask and show UX", () => {
     const groupId = created.ask_group.id;
     expect(created.ok).toBe(true);
     expect(created.type).toBe("ask_group");
+    expect(created.commands.read).toBe(`atix thread ${groupId} --with-docs`);
+    expect(created.commands.read).not.toContain("show --with-replies");
+    expect(created.commands.snapshot).toBe(`atix show ${groupId} --with-docs`);
     expect(created.ask_group.status).toBe("open");
     expect(created.ask_group.counts).toMatchObject({ total: 2, open: 2, claimed: 0, done: 0, canceled: 0 });
     expect(created.ask_group.children.map((child: any) => child.ticket.channel)).toEqual([
