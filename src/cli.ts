@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { openDb } from "./db/connection";
+import { initDb } from "./db/migrate";
 import { parseArgs, flagBool } from "./lib/args";
 import { resolveMeta } from "./lib/meta";
 import { AtixError, failFromError, fail, EXIT } from "./lib/exit";
@@ -27,6 +28,9 @@ type CommandModule = { run: Command["run"] };
  */
 const COMMANDS: Record<string, () => Promise<CommandModule>> = {
   init: () => import("./commands/init.ts"),
+  send: () => import("./commands/send.ts"),
+  ask: () => import("./commands/ask.ts"),
+  inbox: () => import("./commands/inbox.ts"),
   push: () => import("./commands/push.ts"),
   claim: () => import("./commands/claim.ts"),
   release: () => import("./commands/release.ts"),
@@ -44,6 +48,9 @@ const COMMANDS: Record<string, () => Promise<CommandModule>> = {
 /** Commands that operate on the SQLite store. whoami is identity-only. */
 const DB_COMMANDS = new Set<string>([
   "init",
+  "send",
+  "ask",
+  "inbox",
   "push",
   "claim",
   "release",
@@ -92,6 +99,7 @@ async function main(): Promise<number> {
   try {
     if (DB_COMMANDS.has(commandToken)) {
       db = openDb(args);
+      initDb(db);
     }
     const ctx: Ctx = { db, args, json, meta };
     const command = await loader();

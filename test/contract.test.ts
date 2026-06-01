@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { Database } from "bun:sqlite";
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 
 const CLI = new URL("../src/cli.ts", import.meta.url).pathname;
@@ -96,6 +97,83 @@ async function pushTicket(
   return parseJson(res.stdout).id;
 }
 
+function createV1DbWithTicket(): string {
+  const id = "v1-ticket";
+  const createdAt = "2026-01-01T00:00:00.000Z";
+  const db = new Database(dbPath, { create: true });
+  try {
+    db.run("PRAGMA foreign_keys=ON");
+    db.run("CREATE TABLE schema_version (version INTEGER NOT NULL)");
+    db.query("INSERT INTO schema_version (version) VALUES (?)").run(1);
+    db.run(`
+      CREATE TABLE channels (
+        name TEXT PRIMARY KEY,
+        description TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        archived_at TEXT
+      )
+    `);
+    db.run(`
+      CREATE TABLE tickets (
+        id TEXT PRIMARY KEY,
+        channel TEXT NOT NULL REFERENCES channels(name) ON UPDATE CASCADE,
+        status TEXT NOT NULL,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL DEFAULT '',
+        producer_kind TEXT NOT NULL,
+        producer_agent TEXT,
+        producer_project TEXT,
+        producer_cwd TEXT,
+        producer_session TEXT,
+        producer_pid INTEGER,
+        claimer_agent TEXT,
+        claimer_project TEXT,
+        claimer_cwd TEXT,
+        claimer_session TEXT,
+        claimer_pid INTEGER,
+        created_at TEXT NOT NULL,
+        claimed_at TEXT,
+        closed_at TEXT,
+        claim_token TEXT
+      )
+    `);
+    db.run(`
+      CREATE TABLE replies (
+        id TEXT PRIMARY KEY,
+        ticket_id TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+        author_kind TEXT NOT NULL,
+        author_role TEXT NOT NULL,
+        author_agent TEXT,
+        author_project TEXT,
+        author_cwd TEXT,
+        author_session TEXT,
+        author_pid INTEGER,
+        is_final INTEGER NOT NULL DEFAULT 0,
+        body TEXT NOT NULL CHECK (length(body) > 0),
+        created_at TEXT NOT NULL
+      )
+    `);
+    db.query("INSERT INTO channels (name, description, created_at, archived_at) VALUES (?, '', ?, NULL)").run(
+      "review.codex",
+      createdAt,
+    );
+    db.query(
+      `INSERT INTO tickets
+         (id, channel, status, title, body,
+          producer_kind, producer_agent, producer_project, producer_cwd, producer_session, producer_pid,
+          claimer_agent, claimer_project, claimer_cwd, claimer_session, claimer_pid,
+          created_at, claimed_at, closed_at, claim_token)
+       VALUES (?, 'review.codex', 'open', 'v1 title', 'v1 body',
+          'agent', 'legacy-agent', 'legacy-project', NULL, 'legacy-session', NULL,
+          NULL, NULL, NULL, NULL, NULL,
+          ?, NULL, NULL, NULL)`,
+    ).run(id, createdAt);
+  } finally {
+    db.close();
+  }
+  return id;
+}
+
 describe("1. full lifecycle (sync dispatch)", () => {
   test("init → channel → push → claim → done → show ends in done with final reply", async () => {
     await initWithChannel();
@@ -115,11 +193,29 @@ describe("1. full lifecycle (sync dispatch)", () => {
     const show = await atix(dbPath, ["show", id, "--with-replies", "--json"]);
     expect(show.exitCode).toBe(0);
     const showJson = parseJson(show.stdout);
-    expect(showJson.status).toBe("done");
+    expect(showJson.ticket.status).toBe("done");
 
-    const finalReplies = showJson.replies.filter((r: any) => r.is_final === true);
+    const finalReplies = showJson.ticket.replies.filter((r: any) => r.is_final === true);
     expect(finalReplies.length).toBe(1);
     expect(finalReplies[0].body).toBe("all done");
+  });
+});
+
+describe("1b. schema migration", () => {
+  test("v1 database migrates through a normal show command without running init directly", async () => {
+    const id = createV1DbWithTicket();
+
+    const show = await atix(dbPath, ["show", id, "--json"]);
+
+    expect(show.exitCode).toBe(0);
+    expect(show.stderr).toBe("");
+    const json = parseJson(show.stdout);
+    expect(json.ticket).toMatchObject({
+      id,
+      channel: "review.codex",
+      title: "v1 title",
+      body: "v1 body",
+    });
   });
 });
 
@@ -218,7 +314,7 @@ describe("3. cancel race salvage (Patch 4c)", () => {
     expect(done.exitCode).toBe(3);
 
     const show = await atix(dbPath, ["show", id, "--with-replies", "--json"]);
-    const replies = parseJson(show.stdout).replies;
+    const replies = parseJson(show.stdout).ticket.replies;
     const salvaged = replies.filter((r: any) => r.body === "work result");
     expect(salvaged.length).toBe(1);
     expect(salvaged[0].is_final).toBe(false);
@@ -610,12 +706,16 @@ describe("12. JSON schema fields (Patch 2)", () => {
     expect("agent" in json.producer).toBe(true);
   });
 
-  test("show JSON carries id, channel, status, title, body, producer, closed_at", async () => {
+  test("show JSON carries one ticket object with id, channel, status, title, body, producer, closed_at", async () => {
     await initWithChannel();
     const id = await pushTicket("review.codex", "schema-show", "the body");
     const res = await atix(dbPath, ["show", id, "--json"]);
     const json = parseJson(res.stdout);
     expect(json).toMatchObject({
+      ok: true,
+      type: "ticket",
+    });
+    expect(json.ticket).toMatchObject({
       id,
       channel: "review.codex",
       status: "open",
@@ -623,7 +723,8 @@ describe("12. JSON schema fields (Patch 2)", () => {
       body: "the body",
       closed_at: null,
     });
-    expect(json.producer).toBeDefined();
+    expect(json.ticket.producer).toBeDefined();
+    expect(json.id).toBeUndefined();
   });
 
   test("list JSON line carries id, channel, status, age_sec, has_replies, is_orphan, claimed_by", async () => {

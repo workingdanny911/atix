@@ -42,6 +42,33 @@ CREATE INDEX IF NOT EXISTS idx_tickets_channel_created ON tickets(channel, creat
 CREATE INDEX IF NOT EXISTS idx_tickets_claimer ON tickets(claimer_agent, status) WHERE status = 'claimed';
 CREATE INDEX IF NOT EXISTS idx_tickets_claimed_at ON tickets(claimed_at) WHERE status = 'claimed';
 
+CREATE TABLE IF NOT EXISTS ask_groups (
+  id                TEXT PRIMARY KEY,
+  title             TEXT NOT NULL,
+  body              TEXT NOT NULL DEFAULT '',
+  producer_kind     TEXT NOT NULL CHECK (producer_kind IN ('human','agent')),
+  producer_agent    TEXT,
+  producer_project  TEXT,
+  producer_cwd      TEXT,
+  producer_session  TEXT,
+  producer_pid      INTEGER,
+  created_at        TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ask_group_members (
+  group_id     TEXT NOT NULL REFERENCES ask_groups(id) ON DELETE CASCADE,
+  ticket_id    TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+  member_role  TEXT NOT NULL DEFAULT 'opinion' CHECK (member_role IN ('opinion')),
+  position     INTEGER NOT NULL CHECK (position >= 0),
+  created_at   TEXT NOT NULL,
+  PRIMARY KEY (group_id, ticket_id),
+  UNIQUE (ticket_id),
+  UNIQUE (group_id, position)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ask_group_members_group
+  ON ask_group_members(group_id, position, ticket_id);
+
 CREATE TABLE IF NOT EXISTS replies (
   id              TEXT PRIMARY KEY,
   ticket_id       TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
@@ -54,9 +81,39 @@ CREATE TABLE IF NOT EXISTS replies (
   author_pid      INTEGER,
   is_final        INTEGER NOT NULL DEFAULT 0,
   body            TEXT NOT NULL,
-  created_at      TEXT NOT NULL,
-  CHECK (length(body) > 0)
+  created_at      TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_replies_ticket ON replies(ticket_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_replies_final  ON replies(ticket_id) WHERE is_final = 1;
+
+CREATE TABLE IF NOT EXISTS docs (
+  id            TEXT PRIMARY KEY,
+  owner_kind    TEXT NOT NULL CHECK (owner_kind IN ('ask_group','ticket','reply')),
+  ask_group_id  TEXT REFERENCES ask_groups(id) ON DELETE CASCADE,
+  ticket_id     TEXT REFERENCES tickets(id) ON DELETE CASCADE,
+  reply_id      TEXT REFERENCES replies(id) ON DELETE CASCADE,
+  position      INTEGER NOT NULL DEFAULT 0 CHECK (position >= 0),
+  title         TEXT NOT NULL,
+  content_type  TEXT NOT NULL DEFAULT 'text/markdown; charset=utf-8',
+  content       TEXT NOT NULL DEFAULT '',
+  size_bytes    INTEGER NOT NULL CHECK (size_bytes >= 0),
+  created_at    TEXT NOT NULL,
+  CHECK (
+       (owner_kind = 'ask_group' AND ask_group_id IS NOT NULL AND ticket_id IS NULL AND reply_id IS NULL)
+    OR (owner_kind = 'ticket'    AND ask_group_id IS NULL AND ticket_id IS NOT NULL AND reply_id IS NULL)
+    OR (owner_kind = 'reply'     AND ask_group_id IS NULL AND ticket_id IS NULL AND reply_id IS NOT NULL)
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_docs_ask_group
+  ON docs(ask_group_id, position, id)
+  WHERE owner_kind = 'ask_group';
+
+CREATE INDEX IF NOT EXISTS idx_docs_ticket
+  ON docs(ticket_id, position, id)
+  WHERE owner_kind = 'ticket';
+
+CREATE INDEX IF NOT EXISTS idx_docs_reply
+  ON docs(reply_id, position, id)
+  WHERE owner_kind = 'reply';

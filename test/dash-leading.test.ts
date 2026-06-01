@@ -67,7 +67,7 @@ describe("dash-leading flag values (silent data-loss regression)", () => {
     expect(json.size_bytes).toBe(6);
 
     const show = await atix(dbPath, ["show", json.id, "--json"]);
-    expect(parseJson(show.stdout).body).toBe("-hello");
+    expect(parseJson(show.stdout).ticket.body).toBe("-hello");
   });
 
   test("push --body with an inline diff (leading '-' / '+') is preserved verbatim", async () => {
@@ -80,7 +80,7 @@ describe("dash-leading flag values (silent data-loss regression)", () => {
     expect(json.size_bytes).toBe(Buffer.byteLength(diff));
 
     const show = await atix(dbPath, ["show", json.id, "--json"]);
-    expect(parseJson(show.stdout).body).toBe(diff);
+    expect(parseJson(show.stdout).ticket.body).toBe(diff);
   });
 
   test("push --title '-x' preserves the title (no spurious bad_flag)", async () => {
@@ -90,7 +90,7 @@ describe("dash-leading flag values (silent data-loss regression)", () => {
     expect(res.exitCode).toBe(0);
     const json = parseJson(res.stdout);
     const show = await atix(dbPath, ["show", json.id, "--json"]);
-    expect(parseJson(show.stdout).title).toBe("-x");
+    expect(parseJson(show.stdout).ticket.title).toBe("-x");
   });
 
   test("claim --wait '-5s' is rejected as invalid_duration (exit 2), not silently dropped", async () => {
@@ -108,7 +108,7 @@ describe("dash-leading flag values (silent data-loss regression)", () => {
     expect(reply.exitCode).toBe(0);
 
     const show = await atix(dbPath, ["show", id, "--with-replies", "--json"]);
-    const bodies = parseJson(show.stdout).replies.map((r: any) => r.body);
+    const bodies = parseJson(show.stdout).ticket.replies.map((r: any) => r.body);
     expect(bodies).toContain("-note");
   });
 });

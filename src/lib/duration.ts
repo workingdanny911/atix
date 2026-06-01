@@ -34,3 +34,11 @@ export function parseDuration(input: string): number {
   const unit = match[2]!;
   return value * UNIT_SECONDS[unit]!;
 }
+
+/**
+ * Public wait flags accept bare `0` as "do not wait"; other values use the
+ * strict duration grammar shared by polling flags.
+ */
+export function parseWaitDuration(input: string): number {
+  return input === "0" ? 0 : parseDuration(input);
+}

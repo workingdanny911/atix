@@ -1,5 +1,7 @@
 import type { Kind, TicketStatus } from "../types";
 
+export type DocOwnerKind = "ask_group" | "ticket" | "reply";
+
 /**
  * Row shape carrying every column the canonical ticket object needs. Commands
  * that serialize a ticket must SELECT all of these (see TICKET_SELECT_COLUMNS).
@@ -37,6 +39,20 @@ export interface ReplyRow {
   created_at: string;
 }
 
+export interface DocRow {
+  id: string;
+  owner_kind: DocOwnerKind;
+  ask_group_id: string | null;
+  ticket_id: string | null;
+  reply_id: string | null;
+  position: number;
+  title: string;
+  content_type: string;
+  content: string;
+  size_bytes: number;
+  created_at: string;
+}
+
 /**
  * The exact column list a query must SELECT before handing a row to
  * `serializeTicket`. Centralized so show/wait/list stay in lockstep.
@@ -48,9 +64,21 @@ export const TICKET_SELECT_COLUMNS = `id, channel, status, title, body,
 
 export const REPLY_SELECT_COLUMNS = `id, author_kind, author_role, author_agent, is_final, body, created_at`;
 
+export const DOC_SELECT_COLUMNS = `id, owner_kind, ask_group_id, ticket_id, reply_id,
+  position, title, content_type, content, size_bytes, created_at`;
+
 interface SerializeTicketOptions {
   /** Append a `replies` key with the serialized array (omit the key otherwise). */
   replies?: ReplyRow[];
+  /** Append a `docs` key with the serialized array (omit the key otherwise). */
+  docs?: DocRow[];
+  /** Attach docs to serialized replies by reply id when replies are supplied. */
+  replyDocs?: Record<string, DocRow[]>;
+}
+
+interface SerializeReplyOptions {
+  /** Append a `docs` key with the serialized array (omit the key otherwise). */
+  docs?: DocRow[];
 }
 
 /**
@@ -99,15 +127,24 @@ export function serializeTicket(
   };
 
   if (opts.replies !== undefined) {
-    obj.replies = opts.replies.map(serializeReply);
+    obj.replies = opts.replies.map((reply) =>
+      serializeReply(reply, { docs: opts.replyDocs?.[reply.id] }),
+    );
+  }
+
+  if (opts.docs !== undefined) {
+    obj.docs = opts.docs.map(serializeDoc);
   }
 
   return obj;
 }
 
 /** Serialize one reply row to the canonical reply object (is_final → bool). */
-export function serializeReply(reply: ReplyRow): Record<string, unknown> {
-  return {
+export function serializeReply(
+  reply: ReplyRow,
+  opts: SerializeReplyOptions = {},
+): Record<string, unknown> {
+  const obj: Record<string, unknown> = {
     id: reply.id,
     author_kind: reply.author_kind,
     author_role: reply.author_role,
@@ -115,5 +152,27 @@ export function serializeReply(reply: ReplyRow): Record<string, unknown> {
     is_final: reply.is_final === 1,
     body: reply.body,
     created_at: reply.created_at,
+  };
+
+  if (opts.docs !== undefined) {
+    obj.docs = opts.docs.map(serializeDoc);
+  }
+
+  return obj;
+}
+
+export function serializeDoc(doc: DocRow): Record<string, unknown> {
+  return {
+    id: doc.id,
+    owner_kind: doc.owner_kind,
+    ask_group_id: doc.ask_group_id,
+    ticket_id: doc.ticket_id,
+    reply_id: doc.reply_id,
+    position: doc.position,
+    title: doc.title,
+    content_type: doc.content_type,
+    content: doc.content,
+    size_bytes: doc.size_bytes,
+    created_at: doc.created_at,
   };
 }

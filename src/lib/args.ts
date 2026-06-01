@@ -13,14 +13,19 @@ const KNOWN_VALUE_FLAGS = new Set<string>([
   // push / reply / done — body sources & metadata.
   "to",
   "from",
+  "watch",
   "title",
   "body",
   "body-file",
+  "doc",
+  "doc-file",
+  "doc-stdin",
   "agent",
   "project",
   "session",
   "desc",
   "token",
+  "receipt",
   "reason",
   // wait / claim / list — time & filter values.
   "until",
@@ -54,13 +59,45 @@ const KNOWN_BOOLEAN_FLAGS = new Set<string>([
   "orphaned", // list
   "has-replies", // list
   "with-replies", // wait, show
+  "with-docs", // show
   "stats", // channel ls
   "include-archived", // channel ls
   "abandon", // release
+  "notify", // public UX placeholder, rejected by commands for now
 ]);
+
+const REPEATABLE_VALUE_FLAGS = new Set<string>(["to", "doc", "doc-file", "doc-stdin"]);
+
+export interface ParsedFlagOccurrence {
+  key: string;
+  value: string | boolean;
+}
+
+const flagOccurrencesByArgs = new WeakMap<ParsedArgs, ParsedFlagOccurrence[]>();
 
 function normalizeKey(raw: string): string {
   return raw.replace(/^--?/, "");
+}
+
+function setFlag(
+  flags: Record<string, string | boolean>,
+  key: string,
+  value: string | boolean,
+): void {
+  if (!REPEATABLE_VALUE_FLAGS.has(key)) {
+    flags[key] = value;
+    return;
+  }
+
+  const repeatableFlags = flags as Record<string, string | boolean | string[]>;
+  const current = repeatableFlags[key];
+  if (current === undefined) {
+    repeatableFlags[key] = value;
+  } else if (Array.isArray(current)) {
+    current.push(String(value));
+  } else {
+    repeatableFlags[key] = [String(current), String(value)];
+  }
 }
 
 /**
@@ -72,6 +109,7 @@ function normalizeKey(raw: string): string {
 export function parseArgs(argv: string[]): ParsedArgs {
   const positionals: string[] = [];
   const flags: Record<string, string | boolean> = {};
+  const occurrences: ParsedFlagOccurrence[] = [];
 
   for (let i = 0; i < argv.length; i++) {
     const token = argv[i]!;
@@ -83,13 +121,17 @@ export function parseArgs(argv: string[]): ParsedArgs {
 
     const eq = token.indexOf("=");
     if (eq !== -1) {
-      flags[normalizeKey(token.slice(0, eq))] = token.slice(eq + 1);
+      const key = normalizeKey(token.slice(0, eq));
+      const value = token.slice(eq + 1);
+      setFlag(flags, key, value);
+      occurrences.push({ key, value });
       continue;
     }
 
     const key = normalizeKey(token);
     if (KNOWN_BOOLEAN_FLAGS.has(key)) {
-      flags[key] = true;
+      setFlag(flags, key, true);
+      occurrences.push({ key, value: true });
       continue;
     }
 
@@ -102,10 +144,12 @@ export function parseArgs(argv: string[]): ParsedArgs {
     // command can report a clear "requires <value>" error.
     if (KNOWN_VALUE_FLAGS.has(key)) {
       if (next !== undefined) {
-        flags[key] = next;
+        setFlag(flags, key, next);
+        occurrences.push({ key, value: next });
         i++;
       } else {
-        flags[key] = true;
+        setFlag(flags, key, true);
+        occurrences.push({ key, value: true });
       }
       continue;
     }
@@ -113,21 +157,50 @@ export function parseArgs(argv: string[]): ParsedArgs {
     // Unknown flag: keep the conservative heuristic (a following non-dash token
     // is its value, otherwise it is a bare boolean).
     if (next !== undefined && !next.startsWith("-")) {
-      flags[key] = next;
+      setFlag(flags, key, next);
+      occurrences.push({ key, value: next });
       i++;
     } else {
-      flags[key] = true;
+      setFlag(flags, key, true);
+      occurrences.push({ key, value: true });
     }
   }
 
-  return { positionals, flags };
+  const parsed = { positionals, flags };
+  flagOccurrencesByArgs.set(parsed, occurrences);
+  return parsed;
 }
 
 export function flagString(args: ParsedArgs, key: string): string | undefined {
-  const v = args.flags[key];
+  const v = (args.flags as Record<string, string | boolean | string[] | undefined>)[key];
+  if (Array.isArray(v)) return v.at(-1);
   return typeof v === "string" ? v : undefined;
 }
 
 export function flagBool(args: ParsedArgs, key: string): boolean {
   return args.flags[key] === true || args.flags[key] === "true";
+}
+
+export function flagStrings(args: ParsedArgs, key: string): string[] {
+  const v = (args.flags as Record<string, string | boolean | string[] | undefined>)[key];
+  if (Array.isArray(v)) return v;
+  return typeof v === "string" ? [v] : [];
+}
+
+export function flagOccurrences(args: ParsedArgs, keys: ReadonlySet<string>): ParsedFlagOccurrence[] {
+  const occurrences = flagOccurrencesByArgs.get(args);
+  if (occurrences !== undefined) {
+    return occurrences.filter((entry) => keys.has(entry.key));
+  }
+
+  const fallback: ParsedFlagOccurrence[] = [];
+  for (const key of keys) {
+    const value = (args.flags as Record<string, string | boolean | string[] | undefined>)[key];
+    if (Array.isArray(value)) {
+      fallback.push(...value.map((item) => ({ key, value: item })));
+    } else if (value !== undefined) {
+      fallback.push({ key, value });
+    }
+  }
+  return fallback;
 }

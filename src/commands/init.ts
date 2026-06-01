@@ -1,5 +1,5 @@
 import { resolveDbPath } from "../db/connection";
-import { initDb } from "../db/migrate";
+import { initDb, SCHEMA_VERSION } from "../db/migrate";
 import { printJson, printLine } from "../lib/output";
 import { EXIT } from "../lib/exit";
 
@@ -19,7 +19,7 @@ export function run(ctx: Ctx): number {
   const path = resolveDbPath(ctx.args);
 
   if (ctx.json) {
-    printJson({ ok: true, action: "init", db: path, schema_version: 1 });
+    printJson({ ok: true, action: "init", db: path, schema_version: SCHEMA_VERSION });
   } else {
     printLine(`initialized atix database at ${path}`);
   }
